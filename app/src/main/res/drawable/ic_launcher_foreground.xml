@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Nova Star Flare - Primary 4-pointed Spark -->
+    <!-- Safe zone is centered around 54, 54 within 66dp (21 to 87) -->
+    <!-- Center Nova Sparkle Shape -->
+    <path
+        android:pathData="M54,26 C54,41 41,54 26,54 C41,54 54,67 54,82 C54,67 67,54 82,54 C67,54 54,41 54,26 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="26"
+                android:startY="26"
+                android:endX="82"
+                android:endY="82"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#38BDF8" />
+                <item android:offset="0.4" android:color="#818CF8" />
+                <item android:offset="0.8" android:color="#C084FC" />
+                <item android:offset="1.0" android:color="#F472B6" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Inner Core Brilliant Highlight -->
+    <path
+        android:pathData="M54,38 C54,47 47,54 38,54 C47,54 54,61 54,70 C54,61 61,54 70,54 C61,54 54,47 54,38 Z"
+        android:fillColor="#FFFFFF" />
+
+    <!-- Corner Sparkles -->
+    <path
+        android:pathData="M70,32 C70,35.5 66.5,39 63,39 C66.5,39 70,42.5 70,46 C70,42.5 73.5,39 77,39 C73.5,39 70,35.5 70,32 Z"
+        android:fillColor="#38BDF8" />
+
+    <path
+        android:pathData="M38,68 C38,71 35,74 32,74 C35,74 38,77 38,80 C38,77 41,74 44,74 C41,74 38,71 38,68 Z"
+        android:fillColor="#F472B6" />
+</vector>

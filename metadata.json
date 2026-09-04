@@ -1,0 +1,6 @@
+{
+  "name": "Nova AI",
+  "description": "Clean, modern multi-model AI chatbot supporting Gemini, OpenAI, dynamic model switching, image understanding, and chat history.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
