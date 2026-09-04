@@ -52,7 +52,7 @@ class PreferencesManager(context: Context) {
     fun getSelectedModel(provider: String): String {
         return when (provider) {
             PROVIDER_OPENAI -> prefs.getString(KEY_OPENAI_SELECTED_MODEL, "gpt-4o-mini") ?: "gpt-4o-mini"
-            else -> prefs.getString(KEY_GEMINI_SELECTED_MODEL, "gemini-2.5-flash") ?: "gemini-2.5-flash"
+            else -> prefs.getString(KEY_GEMINI_SELECTED_MODEL, "gemini-3.8-flash") ?: "gemini-3.8-flash"
         }
     }
 
@@ -73,11 +73,11 @@ class PreferencesManager(context: Context) {
         get() = prefs.getBoolean(KEY_SETUP_COMPLETED, false)
         set(value) = prefs.edit().putBoolean(KEY_SETUP_COMPLETED, value).apply()
 
+    fun isApiKeyConfigured(provider: String): Boolean = getApiKey(provider).isNotBlank()
+
     fun maskApiKey(key: String): String {
         if (key.isBlank()) return "Not configured"
-        if (key.length <= 8) return "••••••••"
-        val prefix = key.take(4)
-        val suffix = key.takeLast(4)
-        return "$prefix••••••••$suffix"
+        val suffix = if (key.length >= 6) key.takeLast(4) else "••••"
+        return "Configured (••••••••$suffix)"
     }
 }

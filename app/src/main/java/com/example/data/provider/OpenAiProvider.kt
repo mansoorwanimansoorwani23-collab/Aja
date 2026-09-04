@@ -6,6 +6,8 @@ import com.example.data.model.ImageAttachment
 import com.example.data.model.MessageRole
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.Call
+import okhttp3.ConnectionPool
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -21,13 +23,25 @@ class OpenAiProvider : AiProvider {
     override val displayName: String = "OpenAI"
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(60, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .writeTimeout(60, TimeUnit.SECONDS)
+        .connectionPool(ConnectionPool(5, 5, TimeUnit.MINUTES))
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(45, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
         .build()
+
+    @Volatile
+    private var activeCall: Call? = null
+
+    override fun cancelActiveCall() {
+        try {
+            activeCall?.cancel()
+        } catch (_: Exception) {}
+        activeCall = null
+    }
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
+    // Curated 2-4 latest useful OpenAI models
     private val defaultModels = listOf(
         AiModel(
             id = "gpt-4o-mini",
@@ -36,7 +50,7 @@ class OpenAiProvider : AiProvider {
             supportsVision = true,
             supportsStreaming = true,
             supportsImageGen = false,
-            description = "Affordable, fast flagship-grade intelligence & vision"
+            description = "Fast, smart, and multimodal everyday intelligence (Default)"
         ),
         AiModel(
             id = "gpt-4o",
@@ -45,16 +59,16 @@ class OpenAiProvider : AiProvider {
             supportsVision = true,
             supportsStreaming = true,
             supportsImageGen = false,
-            description = "High-intelligence flagship multimodal model"
+            description = "Flagship high-intelligence multimodal model for coding and reasoning"
         ),
         AiModel(
-            id = "gpt-4.5-preview",
-            name = "GPT-4.5 Preview",
+            id = "o3-mini",
+            name = "o3-mini",
             providerId = id,
-            supportsVision = true,
+            supportsVision = false,
             supportsStreaming = true,
             supportsImageGen = false,
-            description = "Advanced reasoning & deep conversational fidelity"
+            description = "Advanced STEM reasoning, math, and coding"
         ),
         AiModel(
             id = "dall-e-3",
@@ -94,55 +108,90 @@ class OpenAiProvider : AiProvider {
                 val json = JSONObject(bodyStr)
                 val dataArray = json.optJSONArray("data") ?: return@withContext Result.success(defaultModels)
 
-                val list = mutableListOf<AiModel>()
+                val availableIds = mutableSetOf<String>()
                 for (i in 0 until dataArray.length()) {
                     val m = dataArray.getJSONObject(i)
                     val modelId = m.getString("id")
-
-                    // Filter relevant text/chat/image models and skip embeddings, audio-transcribe, etc.
-                    val isRelevant = modelId.startsWith("gpt") ||
-                            modelId.startsWith("o1") ||
-                            modelId.startsWith("o3") ||
-                            modelId.startsWith("chatgpt") ||
-                            modelId.startsWith("dall-e")
-
-                    if (isRelevant) {
-                        val isImageGen = modelId.startsWith("dall-e")
-                        val isVision = modelId.contains("4o") || modelId.contains("vision") || modelId.contains("turbo") || modelId.startsWith("o1")
-                        val cleanName = modelId.replace("-", " ").split(" ")
-                            .joinToString(" ") { it.replaceFirstChar { char -> char.uppercase() } }
-
-                        list.add(
-                            AiModel(
-                                id = modelId,
-                                name = cleanName,
-                                providerId = id,
-                                supportsVision = isVision,
-                                supportsStreaming = !isImageGen,
-                                supportsImageGen = isImageGen,
-                                description = if (isImageGen) "Image generation model" else "Chat & reasoning model"
-                            )
-                        )
-                    }
+                    availableIds.add(modelId)
                 }
 
-                // Sort so popular models appear first
-                list.sortByDescending {
-                    when {
-                        it.id.startsWith("gpt-4o-mini") -> 100
-                        it.id.startsWith("gpt-4o") -> 90
-                        it.id.startsWith("dall-e-3") -> 80
-                        it.id.startsWith("o1") -> 70
-                        it.id.startsWith("o3") -> 60
-                        else -> 10
-                    }
-                }
-
-                if (list.isNotEmpty()) Result.success(list) else Result.success(defaultModels)
+                // Curate strictly to 2-4 latest useful models
+                val curated = curateOpenAiModels(availableIds)
+                Result.success(curated)
             }
         } catch (e: Exception) {
             Result.success(defaultModels)
         }
+    }
+
+    private fun curateOpenAiModels(availableIds: Set<String>): List<AiModel> {
+        val list = mutableListOf<AiModel>()
+
+        // 1. Primary/Default: Newest fast model (GPT-4o Mini)
+        list.add(
+            AiModel(
+                id = "gpt-4o-mini",
+                name = "GPT-4o Mini",
+                providerId = id,
+                supportsVision = true,
+                supportsStreaming = true,
+                supportsImageGen = false,
+                description = "Fast, smart, and multimodal everyday intelligence (Default)"
+            )
+        )
+
+        // 2. High Intelligence Flagship: GPT-4o
+        list.add(
+            AiModel(
+                id = "gpt-4o",
+                name = "GPT-4o",
+                providerId = id,
+                supportsVision = true,
+                supportsStreaming = true,
+                supportsImageGen = false,
+                description = "Flagship high-intelligence multimodal model for coding and reasoning"
+            )
+        )
+
+        // 3. STEM / Deep Reasoning: o3-mini or o1
+        val reasoningId = when {
+            availableIds.contains("o3-mini") -> "o3-mini"
+            availableIds.contains("o1") -> "o1"
+            availableIds.contains("o1-mini") -> "o1-mini"
+            else -> "o3-mini"
+        }
+        val reasoningName = when (reasoningId) {
+            "o3-mini" -> "o3-mini"
+            "o1" -> "o1"
+            "o1-mini" -> "o1-mini"
+            else -> reasoningId
+        }
+        list.add(
+            AiModel(
+                id = reasoningId,
+                name = reasoningName,
+                providerId = id,
+                supportsVision = reasoningId == "o1",
+                supportsStreaming = true,
+                supportsImageGen = false,
+                description = "Advanced STEM reasoning, math, and deep logic"
+            )
+        )
+
+        // 4. Image Generation: DALL-E 3
+        list.add(
+            AiModel(
+                id = "dall-e-3",
+                name = "DALL·E 3",
+                providerId = id,
+                supportsVision = false,
+                supportsStreaming = false,
+                supportsImageGen = true,
+                description = "High-fidelity AI image generation"
+            )
+        )
+
+        return list.take(4)
     }
 
     override suspend fun testConnection(apiKey: String, modelId: String): Result<String> = withContext(Dispatchers.IO) {
@@ -259,7 +308,10 @@ class OpenAiProvider : AiProvider {
                 .post(requestJson.toString().toRequestBody(jsonMediaType))
                 .build()
 
-            client.newCall(request).execute().use { response ->
+            val call = client.newCall(request)
+            activeCall = call
+            try {
+                call.execute().use { response ->
                 if (!response.isSuccessful) {
                     val msg = when (response.code) {
                         401 -> "Invalid OpenAI API Key"
@@ -311,6 +363,9 @@ class OpenAiProvider : AiProvider {
                     val content = message?.optString("content", "") ?: ""
                     Result.success(content)
                 }
+            }
+            } finally {
+                activeCall = null
             }
         } catch (e: Exception) {
             Result.failure(Exception(e.localizedMessage ?: "Failed to generate OpenAI response"))

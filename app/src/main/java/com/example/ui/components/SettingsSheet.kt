@@ -294,7 +294,8 @@ fun SettingsSheet(
             }
 
             // 3. API Key Management
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            val isKeyConfigured = currentApiKeyMasked != "Not configured"
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -314,54 +315,88 @@ fun SettingsSheet(
 
                 // Currently saved masked key
                 Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Row(
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Column {
-                            Text(
-                                text = "Current Key:",
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Text(
-                                text = currentApiKeyMasked,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Medium
-                            )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text(
+                                    text = if (currentProvider == PreferencesManager.PROVIDER_GEMINI) "Google Gemini API Key:" else "OpenAI API Key:",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = currentApiKeyMasked,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+
+                            if (isKeyConfigured) {
+                                OutlinedButton(
+                                    onClick = { onApiKeyRemoved(currentProvider) },
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        contentColor = MaterialTheme.colorScheme.error
+                                    ),
+                                    modifier = Modifier.testTag("remove_api_key_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Delete,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Remove Key", fontSize = 12.sp)
+                                }
+                            }
                         }
 
-                        if (currentApiKeyMasked != "Not configured") {
-                            IconButton(
-                                onClick = { onApiKeyRemoved(currentProvider) },
-                                modifier = Modifier.size(32.dp)
+                        if (isKeyConfigured) {
+                            OutlinedButton(
+                                onClick = {
+                                    isTesting = true
+                                    testResult = null
+                                    onTestConnection(currentProvider, "") { success, msg ->
+                                        isTesting = false
+                                        testResult = Pair(success, msg)
+                                    }
+                                },
+                                enabled = !isTesting,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("test_saved_key_button")
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.Delete,
-                                    contentDescription = "Remove API key",
-                                    tint = MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.size(18.dp)
-                                )
+                                if (isTesting && newKeyInput.isBlank()) {
+                                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Testing Saved Key...", fontSize = 12.sp)
+                                } else {
+                                    Text("Test Saved API Key", fontSize = 12.sp)
+                                }
                             }
                         }
                     }
                 }
 
-                // Enter new key input
+                // Enter new key input (Set / Change)
                 OutlinedTextField(
                     value = newKeyInput,
                     onValueChange = {
                         newKeyInput = it
                         testResult = null
                     },
-                    label = { Text("Update / Set API Key") },
+                    label = { Text(if (isKeyConfigured) "Change API Key" else "Set API Key") },
                     placeholder = {
                         Text(if (currentProvider == PreferencesManager.PROVIDER_GEMINI) "AIzaSy..." else "sk-...")
                     },
@@ -391,7 +426,7 @@ fun SettingsSheet(
                             if (keyToTest.isNotBlank()) {
                                 isTesting = true
                                 testResult = null
-                                onTestConnection(currentProvider, keyToTest) { success, msg ->
+                                onTestConnection(currentProvider, keyToTest.trim()) { success, msg ->
                                     isTesting = false
                                     testResult = Pair(success, msg)
                                 }
@@ -400,19 +435,19 @@ fun SettingsSheet(
                         enabled = newKeyInput.isNotBlank() && !isTesting,
                         modifier = Modifier.weight(1f)
                     ) {
-                        if (isTesting) {
+                        if (isTesting && newKeyInput.isNotBlank()) {
                             CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                             Spacer(modifier = Modifier.width(6.dp))
                             Text("Testing...")
                         } else {
-                            Text("Test Key")
+                            Text("Test New Key")
                         }
                     }
 
                     Button(
                         onClick = {
                             if (newKeyInput.isNotBlank()) {
-                                onApiKeySaved(currentProvider, newKeyInput)
+                                onApiKeySaved(currentProvider, newKeyInput.trim())
                                 newKeyInput = ""
                                 testResult = null
                             }
@@ -420,7 +455,7 @@ fun SettingsSheet(
                         enabled = newKeyInput.isNotBlank(),
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("Save Key")
+                        Text(if (isKeyConfigured) "Change Key" else "Set Key")
                     }
                 }
 

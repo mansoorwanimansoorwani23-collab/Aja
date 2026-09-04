@@ -25,4 +25,6 @@ interface AiProvider {
         prompt: String,
         model: AiModel?
     ): Result<String>
+
+    fun cancelActiveCall() {}
 }

@@ -31,12 +31,18 @@ class ChatRepository(
 ) {
     private val chatDao = database.chatDao()
 
+    private val modelCache = java.util.concurrent.ConcurrentHashMap<String, List<AiModel>>()
+
     val allConversations: Flow<List<ConversationEntity>> = chatDao.getAllConversations()
 
     fun getMessages(conversationId: String): Flow<List<ChatMessage>> {
         return chatDao.getMessagesForConversation(conversationId).map { entities ->
             entities.map { it.toDomain() }
         }
+    }
+
+    suspend fun getMessagesOnce(conversationId: String): List<ChatMessage> = withContext(Dispatchers.IO) {
+        chatDao.getMessagesOnce(conversationId).map { it.toDomain() }
     }
 
     suspend fun createNewConversation(
@@ -81,10 +87,36 @@ class ChatRepository(
         return ProviderRegistry.getProvider(preferencesManager.activeProvider)
     }
 
-    suspend fun fetchModelsForProvider(providerId: String): Result<List<AiModel>> {
+    suspend fun fetchModelsForProvider(providerId: String, forceRefresh: Boolean = false): Result<List<AiModel>> {
+        if (!forceRefresh) {
+            val cached = modelCache[providerId]
+            if (!cached.isNullOrEmpty()) {
+                return Result.success(cached)
+            }
+        }
         val provider = ProviderRegistry.getProvider(providerId)
         val apiKey = preferencesManager.getApiKey(providerId)
-        return provider.fetchModels(apiKey)
+        val result = provider.fetchModels(apiKey)
+        result.onSuccess { models ->
+            if (models.isNotEmpty()) {
+                modelCache[providerId] = models
+            }
+        }
+        return result
+    }
+
+    fun clearModelCache(providerId: String? = null) {
+        if (providerId != null) {
+            modelCache.remove(providerId)
+        } else {
+            modelCache.clear()
+        }
+    }
+
+    fun cancelActiveGeneration(providerId: String = preferencesManager.activeProvider) {
+        try {
+            ProviderRegistry.getProvider(providerId).cancelActiveCall()
+        } catch (_: Exception) {}
     }
 
     suspend fun testConnection(providerId: String, apiKey: String, modelId: String): Result<String> {

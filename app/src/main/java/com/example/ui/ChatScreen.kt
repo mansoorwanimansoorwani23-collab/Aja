@@ -400,12 +400,8 @@ fun ChatScreen(
     if (showSetupDialog) {
         SetupDialog(
             initialProvider = currentProvider,
-            onComplete = { prov, key ->
-                viewModel.saveApiKey(prov, key)
-                viewModel.dismissSetupDialog()
-            },
-            onTestConnection = { prov, key, cb ->
-                viewModel.testConnection(prov, key, cb)
+            onConnectAndDetect = { prov, key, cb ->
+                viewModel.connectAndAutoDetect(prov, key, cb)
             },
             onDismiss = { viewModel.dismissSetupDialog() }
         )

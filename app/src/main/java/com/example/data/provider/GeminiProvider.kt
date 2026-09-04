@@ -6,6 +6,8 @@ import com.example.data.model.ImageAttachment
 import com.example.data.model.MessageRole
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.Call
+import okhttp3.ConnectionPool
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -21,22 +23,43 @@ class GeminiProvider : AiProvider {
     override val displayName: String = "Google Gemini"
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(60, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .writeTimeout(60, TimeUnit.SECONDS)
+        .connectionPool(ConnectionPool(5, 5, TimeUnit.MINUTES))
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(45, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
         .build()
+
+    @Volatile
+    private var activeCall: Call? = null
+
+    override fun cancelActiveCall() {
+        try {
+            activeCall?.cancel()
+        } catch (_: Exception) {}
+        activeCall = null
+    }
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
+    // Curated latest Gemini models (Gemini 3.8 Flash, Gemini 3.7 Flash, Gemini 3.5 Flash, Gemini 3.1 Pro, Gemini 2.5 Flash Image)
     private val defaultModels = listOf(
         AiModel(
-            id = "gemini-2.5-flash",
-            name = "Gemini 2.5 Flash",
+            id = "gemini-3.8-flash",
+            name = "Gemini 3.8 Flash",
             providerId = id,
             supportsVision = true,
             supportsStreaming = true,
             supportsImageGen = false,
-            description = "Fast, multimodal intelligence for everyday tasks & coding"
+            description = "Latest flagship Gemini model: ultra-fast reasoning, multimodal & coding (Recommended)"
+        ),
+        AiModel(
+            id = "gemini-3.7-flash",
+            name = "Gemini 3.7 Flash",
+            providerId = id,
+            supportsVision = true,
+            supportsStreaming = true,
+            supportsImageGen = false,
+            description = "Advanced hybrid reasoning and multimodal intelligence"
         ),
         AiModel(
             id = "gemini-3.5-flash",
@@ -45,7 +68,7 @@ class GeminiProvider : AiProvider {
             supportsVision = true,
             supportsStreaming = true,
             supportsImageGen = false,
-            description = "High-speed reasoning, coding, and general tasks"
+            description = "Next-gen high-efficiency multimodal model for everyday tasks & coding"
         ),
         AiModel(
             id = "gemini-3.1-pro-preview",
@@ -54,22 +77,27 @@ class GeminiProvider : AiProvider {
             supportsVision = true,
             supportsStreaming = true,
             supportsImageGen = false,
-            description = "Advanced reasoning, complex STEM, and deep coding"
+            description = "Frontier reasoning, complex STEM, and deep coding"
         ),
         AiModel(
             id = "gemini-2.5-flash-image",
             name = "Gemini 2.5 Flash Image",
             providerId = id,
-            supportsVision = true,
+            supportsVision = false,
             supportsStreaming = false,
             supportsImageGen = true,
-            description = "Multimodal image generation and visual synthesis"
+            description = "High-quality AI image generation"
         )
     )
 
     override suspend fun fetchModels(apiKey: String): Result<List<AiModel>> = withContext(Dispatchers.IO) {
+        val cleanKey = apiKey.trim()
+        if (cleanKey.isEmpty()) {
+            return@withContext Result.success(defaultModels)
+        }
+
         try {
-            val url = "https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey.trim()}"
+            val url = "https://generativelanguage.googleapis.com/v1beta/models?key=$cleanKey"
             val request = Request.Builder().url(url).get().build()
 
             client.newCall(request).execute().use { response ->
@@ -88,15 +116,12 @@ class GeminiProvider : AiProvider {
                 val json = JSONObject(bodyStr)
                 val modelsArray = json.optJSONArray("models") ?: return@withContext Result.success(defaultModels)
 
-                val parsedModels = mutableListOf<AiModel>()
+                val availableIds = mutableSetOf<String>()
                 for (i in 0 until modelsArray.length()) {
                     val m = modelsArray.getJSONObject(i)
                     val rawName = m.getString("name") // e.g. "models/gemini-2.5-flash"
                     val cleanId = rawName.removePrefix("models/")
-                    val dispName = m.optString("displayName", cleanId)
-                    val desc = m.optString("description", "")
                     val methods = m.optJSONArray("supportedGenerationMethods")
-
                     var canGenerate = false
                     if (methods != null) {
                         for (j in 0 until methods.length()) {
@@ -106,34 +131,137 @@ class GeminiProvider : AiProvider {
                             }
                         }
                     }
-
-                    if (canGenerate) {
-                        val isImageGen = cleanId.contains("image") || cleanId.contains("imagen")
-                        val isVision = !cleanId.contains("embedding") && !cleanId.contains("aqa")
-                        parsedModels.add(
-                            AiModel(
-                                id = cleanId,
-                                name = dispName,
-                                providerId = id,
-                                supportsVision = isVision,
-                                supportsStreaming = !isImageGen,
-                                supportsImageGen = isImageGen,
-                                description = desc
-                            )
-                        )
+                    if (canGenerate || cleanId.contains("imagen")) {
+                        availableIds.add(cleanId)
                     }
                 }
 
-                if (parsedModels.isNotEmpty()) {
-                    Result.success(parsedModels)
-                } else {
-                    Result.success(defaultModels)
-                }
+                // Curate strictly to 2-4 latest useful models, auto-prioritizing the newest suitable model
+                val curated = curateGeminiModels(availableIds)
+                Result.success(curated)
             }
         } catch (e: Exception) {
-            // Return defaults if offline or network error, but allow user to use
             Result.success(defaultModels)
         }
+    }
+
+    private fun curateGeminiModels(availableIds: Set<String>): List<AiModel> {
+        val list = mutableListOf<AiModel>()
+
+        // 1. Primary/Default: Newest suitable Flash model (3.8, 3.7, 3.5, etc.)
+        val flashId = when {
+            availableIds.contains("gemini-3.8-flash") -> "gemini-3.8-flash"
+            availableIds.contains("gemini-3.7-flash") -> "gemini-3.7-flash"
+            availableIds.contains("gemini-3.5-flash") -> "gemini-3.5-flash"
+            availableIds.contains("gemini-3.1-flash-lite-preview") -> "gemini-3.1-flash-lite-preview"
+            availableIds.contains("gemini-flash-latest") -> "gemini-flash-latest"
+            availableIds.contains("gemini-2.5-flash") -> "gemini-2.5-flash"
+            else -> "gemini-3.8-flash"
+        }
+        val flashName = when (flashId) {
+            "gemini-3.8-flash" -> "Gemini 3.8 Flash"
+            "gemini-3.7-flash" -> "Gemini 3.7 Flash"
+            "gemini-3.5-flash" -> "Gemini 3.5 Flash"
+            "gemini-3.1-flash-lite-preview" -> "Gemini 3.1 Flash Lite"
+            "gemini-flash-latest" -> "Gemini Flash Latest"
+            "gemini-2.5-flash" -> "Gemini 2.5 Flash"
+            else -> flashId
+        }
+        list.add(
+            AiModel(
+                id = flashId,
+                name = flashName,
+                providerId = id,
+                supportsVision = true,
+                supportsStreaming = true,
+                supportsImageGen = false,
+                description = "Latest flagship Gemini model: ultra-fast reasoning, multimodal & coding (Default)"
+            )
+        )
+
+        // 2. Gemini 3.7 Flash (if available and not already added)
+        if (flashId != "gemini-3.7-flash" && (availableIds.contains("gemini-3.7-flash") || availableIds.isEmpty())) {
+            list.add(
+                AiModel(
+                    id = "gemini-3.7-flash",
+                    name = "Gemini 3.7 Flash",
+                    providerId = id,
+                    supportsVision = true,
+                    supportsStreaming = true,
+                    supportsImageGen = false,
+                    description = "Advanced hybrid reasoning and multimodal intelligence"
+                )
+            )
+        }
+
+        // 3. Gemini 3.5 Flash (if available and not already added)
+        if (flashId != "gemini-3.5-flash" && (availableIds.contains("gemini-3.5-flash") || availableIds.isEmpty())) {
+            list.add(
+                AiModel(
+                    id = "gemini-3.5-flash",
+                    name = "Gemini 3.5 Flash",
+                    providerId = id,
+                    supportsVision = true,
+                    supportsStreaming = true,
+                    supportsImageGen = false,
+                    description = "Next-gen high-efficiency multimodal model for everyday tasks & coding"
+                )
+            )
+        }
+
+        // 4. Frontier Pro model: Gemini 3.1 Pro / Gemini 3.7 Pro
+        val proId = when {
+            availableIds.contains("gemini-3.7-pro") -> "gemini-3.7-pro"
+            availableIds.contains("gemini-3.1-pro-preview") -> "gemini-3.1-pro-preview"
+            availableIds.contains("gemini-2.5-pro") -> "gemini-2.5-pro"
+            else -> "gemini-3.1-pro-preview"
+        }
+        val proName = when (proId) {
+            "gemini-3.7-pro" -> "Gemini 3.7 Pro"
+            "gemini-3.1-pro-preview" -> "Gemini 3.1 Pro"
+            "gemini-2.5-pro" -> "Gemini 2.5 Pro"
+            else -> proId
+        }
+        if (list.none { it.id == proId }) {
+            list.add(
+                AiModel(
+                    id = proId,
+                    name = proName,
+                    providerId = id,
+                    supportsVision = true,
+                    supportsStreaming = true,
+                    supportsImageGen = false,
+                    description = "Frontier reasoning, complex STEM, and deep coding"
+                )
+            )
+        }
+
+        // 5. Image Generation model
+        val imageModelId = when {
+            availableIds.contains("gemini-2.5-flash-image") -> "gemini-2.5-flash-image"
+            availableIds.contains("gemini-3.1-flash-image-preview") -> "gemini-3.1-flash-image-preview"
+            availableIds.contains("imagen-3.0-generate-002") -> "imagen-3.0-generate-002"
+            else -> "gemini-2.5-flash-image"
+        }
+        val imageModelName = when (imageModelId) {
+            "gemini-2.5-flash-image" -> "Gemini 2.5 Flash Image"
+            "gemini-3.1-flash-image-preview" -> "Gemini 3.1 Flash Image"
+            "imagen-3.0-generate-002" -> "Imagen 3"
+            else -> imageModelId
+        }
+        list.add(
+            AiModel(
+                id = imageModelId,
+                name = imageModelName,
+                providerId = id,
+                supportsVision = false,
+                supportsStreaming = false,
+                supportsImageGen = true,
+                description = "High-quality AI image generation"
+            )
+        )
+
+        return list
     }
 
     override suspend fun testConnection(apiKey: String, modelId: String): Result<String> = withContext(Dispatchers.IO) {
@@ -143,7 +271,7 @@ class GeminiProvider : AiProvider {
                 return@withContext Result.failure(Exception("API key cannot be empty"))
             }
 
-            val targetModel = modelId.ifEmpty { "gemini-2.5-flash" }
+            val targetModel = modelId.ifEmpty { "gemini-3.8-flash" }
             val url = "https://generativelanguage.googleapis.com/v1beta/models/$targetModel:generateContent?key=$cleanKey"
 
             val bodyJson = JSONObject().apply {
@@ -256,7 +384,10 @@ class GeminiProvider : AiProvider {
                 .post(requestJson.toString().toRequestBody(jsonMediaType))
                 .build()
 
-            client.newCall(request).execute().use { response ->
+            val call = client.newCall(request)
+            activeCall = call
+            try {
+                call.execute().use { response ->
                 if (!response.isSuccessful) {
                     val errBody = response.body?.string() ?: ""
                     val friendlyMsg = when (response.code) {
@@ -324,6 +455,9 @@ class GeminiProvider : AiProvider {
                         Result.success("No response generated.")
                     }
                 }
+            }
+            } finally {
+                activeCall = null
             }
         } catch (e: Exception) {
             Result.failure(Exception(e.localizedMessage ?: "Failed to generate response"))

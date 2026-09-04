@@ -39,7 +39,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
 
-    // Available models for active provider
+    // Available curated models for active provider
     private val _availableModels = MutableStateFlow<List<AiModel>>(emptyList())
     val availableModels: StateFlow<List<AiModel>> = _availableModels.asStateFlow()
 
@@ -69,12 +69,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     val showSetupDialog: StateFlow<Boolean> = _showSetupDialog.asStateFlow()
 
     private var activeJob: Job? = null
-    private var messagesCollectJob: Job? = null
 
     init {
         // Pre-fill from BuildConfig if user hasn't set Gemini key and it's present
         val existingGemini = preferencesManager.getApiKey(PreferencesManager.PROVIDER_GEMINI)
-        if (existingGemini.isBlank() && try { BuildConfig.GEMINI_API_KEY.isNotEmpty() } catch (_: Throwable) { false }) {
+        if (existingGemini.isBlank()) {
             try {
                 if (BuildConfig.GEMINI_API_KEY.isNotEmpty() && BuildConfig.GEMINI_API_KEY != "MY_GEMINI_API_KEY") {
                     preferencesManager.setApiKey(PreferencesManager.PROVIDER_GEMINI, BuildConfig.GEMINI_API_KEY)
@@ -89,7 +88,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             _showSetupDialog.value = true
         }
 
-        refreshModels()
+        refreshModels(autoSelectNewest = true)
         loadOrCreateInitialChat()
     }
 
@@ -110,11 +109,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectConversation(conversationId: String) {
         _activeConversationId.value = conversationId
-        messagesCollectJob?.cancel()
-        messagesCollectJob = viewModelScope.launch {
-            repository.getMessages(conversationId).collect { msgList ->
-                _messages.value = msgList
-            }
+        viewModelScope.launch {
+            _messages.value = repository.getMessagesOnce(conversationId)
         }
     }
 
@@ -179,22 +175,68 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         preferencesManager.isSetupCompleted = true
     }
 
-    fun refreshModels() {
+    private fun selectNewestSuitableModel(provider: String, models: List<AiModel>): AiModel? {
+        if (models.isEmpty()) return null
+        return if (provider == PreferencesManager.PROVIDER_OPENAI) {
+            models.find { it.id == "gpt-4o-mini" }
+                ?: models.find { it.id == "gpt-4o" }
+                ?: models.firstOrNull { it.supportsStreaming && !it.supportsImageGen }
+                ?: models.first()
+        } else {
+            models.find { it.id == "gemini-3.8-flash" }
+                ?: models.find { it.id == "gemini-3.7-flash" }
+                ?: models.find { it.id == "gemini-3.5-flash" }
+                ?: models.find { it.id == "gemini-3.1-pro-preview" }
+                ?: models.find { it.id == "gemini-flash-latest" }
+                ?: models.find { it.id == "gemini-2.5-flash" }
+                ?: models.firstOrNull { it.supportsStreaming && !it.supportsImageGen }
+                ?: models.first()
+        }
+    }
+
+    fun refreshModels(autoSelectNewest: Boolean = false) {
         viewModelScope.launch {
             _isLoadingModels.value = true
             val provider = preferencesManager.activeProvider
             val res = repository.fetchModelsForProvider(provider)
             res.onSuccess { list ->
                 _availableModels.value = list
-                // If currently selected model is not in list, select the first valid model
                 val currentModel = preferencesManager.getSelectedModel(provider)
-                if (list.isNotEmpty() && list.none { it.id == currentModel }) {
-                    preferencesManager.setSelectedModel(provider, list.first().id)
+                if (autoSelectNewest || list.none { it.id == currentModel }) {
+                    val newest = selectNewestSuitableModel(provider, list)
+                    if (newest != null) {
+                        preferencesManager.setSelectedModel(provider, newest.id)
+                    }
                 }
             }.onFailure { err ->
                 _snackbarMessage.value = err.message ?: "Failed to refresh models"
             }
             _isLoadingModels.value = false
+        }
+    }
+
+    fun connectAndAutoDetect(provider: String, key: String, onResult: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            preferencesManager.setApiKey(provider, key)
+            preferencesManager.activeProvider = provider
+            preferencesManager.isSetupCompleted = true
+            repository.clearModelCache(provider)
+            _isLoadingModels.value = true
+
+            val res = repository.fetchModelsForProvider(provider, forceRefresh = true)
+            _isLoadingModels.value = false
+
+            res.onSuccess { models ->
+                _availableModels.value = models
+                val newest = selectNewestSuitableModel(provider, models)
+                if (newest != null) {
+                    preferencesManager.setSelectedModel(provider, newest.id)
+                }
+                _showSetupDialog.value = false
+                onResult(true, "Connected successfully to ${newest?.name ?: provider}")
+            }.onFailure { err ->
+                onResult(false, err.message ?: "Failed to validate API key")
+            }
         }
     }
 
@@ -204,17 +246,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun switchProvider(provider: String) {
         preferencesManager.activeProvider = provider
-        refreshModels()
+        refreshModels(autoSelectNewest = true)
     }
 
     fun saveApiKey(provider: String, key: String) {
         preferencesManager.setApiKey(provider, key)
         preferencesManager.isSetupCompleted = true
-        refreshModels()
+        repository.clearModelCache(provider)
+        refreshModels(autoSelectNewest = true)
     }
 
     fun removeApiKey(provider: String) {
         preferencesManager.removeApiKey(provider)
+        repository.clearModelCache(provider)
         refreshModels()
     }
 
@@ -264,21 +308,26 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        // Clear input box and attachment immediately
-        _inputText.value = ""
-        _attachedImage.value = null
-        _isImageGenMode.value = false
-
         val provider = repository.getActiveProvider()
         val selectedModelId = preferencesManager.getSelectedModel(providerId)
         val selectedModel = _availableModels.value.find { it.id == selectedModelId }
             ?: AiModel(id = selectedModelId, name = selectedModelId, providerId = providerId, supportsVision = true, supportsStreaming = true)
 
-        // Capability checks
+        // Strict capability checks
         if (image != null && !selectedModel.supportsVision) {
-            _snackbarMessage.value = "This model does not support image understanding. Please select a multimodal model."
+            _snackbarMessage.value = "Selected model (${selectedModel.name}) does not support image understanding. Please choose a multimodal model."
             return
         }
+
+        if (isImgGen && !selectedModel.supportsImageGen && providerId != PreferencesManager.PROVIDER_OPENAI) {
+            _snackbarMessage.value = "Image generation is not supported by ${selectedModel.name}."
+            return
+        }
+
+        // Clear input box and attachment immediately
+        _inputText.value = ""
+        _attachedImage.value = null
+        _isImageGenMode.value = false
 
         // Auto-update conversation title if it's the first message
         if (_messages.value.isEmpty()) {
@@ -288,7 +337,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        // 1. Insert User Message into Room
+        // 1. Prepare User Message and Placeholder
         val userMsgId = UUID.randomUUID().toString()
         val userMsg = ChatMessage(
             id = userMsgId,
@@ -298,7 +347,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             imagePath = image?.localUri
         )
 
-        // 2. Prepare Assistant Placeholder Message
         val assistantMsgId = UUID.randomUUID().toString()
         val assistantPlaceholder = ChatMessage(
             id = assistantMsgId,
@@ -308,16 +356,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             isStreaming = true
         )
 
-        viewModelScope.launch {
-            repository.saveMessage(userMsg)
-            repository.saveMessage(assistantPlaceholder)
-        }
-
+        // Update in-memory state immediately for instant responsiveness
+        _messages.value = _messages.value + userMsg + assistantPlaceholder
         _isGenerating.value = true
 
         activeJob = viewModelScope.launch {
             if (isImgGen) {
-                // Image Generation Flow
                 val imgGenResult = provider.generateImage(apiKey, text, selectedModel)
                 _isGenerating.value = false
                 imgGenResult.onSuccess { imageUrl ->
@@ -326,18 +370,25 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         generatedImageUrl = imageUrl,
                         isStreaming = false
                     )
-                    repository.updateMessage(completedMsg)
+                    _messages.value = _messages.value.map {
+                        if (it.id == assistantMsgId) completedMsg else it
+                    }
+                    repository.saveMessage(userMsg)
+                    repository.saveMessage(completedMsg)
                 }.onFailure { err ->
                     val errorMsg = assistantPlaceholder.copy(
                         content = err.message ?: "Failed to generate image.",
                         isError = true,
                         isStreaming = false
                     )
-                    repository.updateMessage(errorMsg)
+                    _messages.value = _messages.value.map {
+                        if (it.id == assistantMsgId) errorMsg else it
+                    }
+                    repository.saveMessage(userMsg)
+                    repository.saveMessage(errorMsg)
                 }
             } else {
-                // Text / Multimodal Chat Flow
-                val currentChatHistory = _messages.value + userMsg
+                val currentChatHistory = _messages.value.filter { it.id != assistantMsgId }
                 val accumulatedContent = StringBuilder()
 
                 val chatResult = provider.generateChat(
@@ -347,10 +398,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     attachment = image,
                     onChunk = { chunk ->
                         accumulatedContent.append(chunk)
-                        // Live update in memory for responsive smooth typing
+                        val textSoFar = accumulatedContent.toString()
+                        // Immediate in-memory update on chunk arrival
                         _messages.value = _messages.value.map {
                             if (it.id == assistantMsgId) {
-                                it.copy(content = accumulatedContent.toString())
+                                it.copy(content = textSoFar)
                             } else it
                         }
                     }
@@ -363,14 +415,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         content = finalText,
                         isStreaming = false
                     )
-                    repository.updateMessage(completedMsg)
+                    _messages.value = _messages.value.map {
+                        if (it.id == assistantMsgId) completedMsg else it
+                    }
+                    repository.saveMessage(userMsg)
+                    repository.saveMessage(completedMsg)
                 }.onFailure { err ->
                     val errorMsg = assistantPlaceholder.copy(
                         content = err.message ?: "An unexpected error occurred.",
                         isError = true,
                         isStreaming = false
                     )
-                    repository.updateMessage(errorMsg)
+                    _messages.value = _messages.value.map {
+                        if (it.id == assistantMsgId) errorMsg else it
+                    }
+                    repository.saveMessage(userMsg)
+                    repository.saveMessage(errorMsg)
                 }
             }
         }
@@ -378,15 +438,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun stopGeneration() {
         activeJob?.cancel()
+        repository.cancelActiveGeneration()
         _isGenerating.value = false
-        // Update any currently streaming message in room to not streaming
+
         val currentStreaming = _messages.value.find { it.isStreaming }
         if (currentStreaming != null) {
+            val stopped = currentStreaming.copy(
+                content = if (currentStreaming.content.isBlank()) "Generation stopped." else currentStreaming.content,
+                isStreaming = false
+            )
+            _messages.value = _messages.value.map {
+                if (it.id == currentStreaming.id) stopped else it
+            }
             viewModelScope.launch {
-                val stopped = currentStreaming.copy(
-                    content = if (currentStreaming.content.isBlank()) "Generation stopped." else currentStreaming.content,
-                    isStreaming = false
-                )
                 repository.updateMessage(stopped)
             }
         }
@@ -399,6 +463,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         // Remove trailing assistant/error message if any
         val lastMsg = _messages.value.lastOrNull()
         if (lastMsg != null && lastMsg.role == MessageRole.ASSISTANT) {
+            _messages.value = _messages.value.filter { it.id != lastMsg.id }
             viewModelScope.launch {
                 repository.deleteMessage(lastMsg.id)
             }
