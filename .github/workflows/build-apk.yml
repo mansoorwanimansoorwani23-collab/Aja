@@ -27,8 +27,7 @@ jobs:
         run: |
           java -version
           echo "JAVA_HOME: $JAVA_HOME"
-          JAVA_VERSION_OUTPUT=$(java -version 2>&1)
-          JAVA_MAJOR=$(echo "$JAVA_VERSION_OUTPUT" | head -n 1 | sed -E 's/.*version "([0-9]+).*/\1/')
+          JAVA_MAJOR=$(java -version 2>&1 | grep -i "version" | head -n 1 | sed -E 's/.*version "([0-9]+).*/\1/')
           if [ -z "$JAVA_MAJOR" ] || ! [[ "$JAVA_MAJOR" =~ ^[0-9]+$ ]]; then
             echo "ERROR: Failed to detect active Java major version."
             exit 1
@@ -151,23 +150,13 @@ jobs:
           TAG_NAME="debug-apk-build-${{ github.run_number }}-${{ github.run_attempt }}"
           RELEASE_TITLE="Debug APK Build #${{ github.run_number }}"
 
-          NOTES=$(cat <<EOF
-          ### Debug APK Build
-          - **Build Type:** Automatically generated debug APK
-          - **Built By:** GitHub Actions
-          - **Run Number:** ${{ github.run_number }}
-          - **Run Attempt:** ${{ github.run_attempt }}
-          - **Commit SHA:** ${{ github.sha }}
-          - **Notice:** The APK is intended for testing.
-          - **Production Notice:** The APK is not a Play Store production release.
-          - **Signing:** The APK is signed only with a temporary debug keystore.
-          EOF
-          )
+          printf "### Debug APK Build Details\n- **Build Type:** Automatically generated debug APK\n- **Built By:** GitHub Actions\n- **Run Number:** %s\n- **Run Attempt:** %s\n- **Commit SHA:** %s\n- **Notice:** The APK is intended for testing.\n- **Production Notice:** The APK is not a Play Store production release.\n- **Signing:** The APK is signed only with a temporary debug keystore.\n" \
+            "${{ github.run_number }}" "${{ github.run_attempt }}" "${{ github.sha }}" > /tmp/release_notes.md
 
           echo "Creating GitHub Release with tag '$TAG_NAME'..."
           gh release create "$TAG_NAME" "$ASSET_PATH" \
             --title "$RELEASE_TITLE" \
-            --notes "$NOTES" \
+            --notes-file /tmp/release_notes.md \
             --target "${{ github.sha }}" \
             --latest
 
@@ -192,27 +181,27 @@ jobs:
             echo "APK Asset Filename: $ASSET_FILENAME"
             echo "=========================================="
 
-            cat <<EOF >> "$GITHUB_STEP_SUMMARY"
-            ## 🚀 Debug APK Build & Release Succeeded
-
-            - **Release Tag:** \`$TAG_NAME\`
-            - **Release Title:** $RELEASE_TITLE
-            - **Download Release Asset:** [$ASSET_FILENAME]($RELEASE_URL)
-            - **Direct Release Page:** [View Release]($RELEASE_URL)
-
-            > 📱 The APK can be downloaded directly on your phone from the release **Assets** section.
-            > 📦 The standard GitHub Actions artifact (\`app-debug-apk\`) is also available as a backup.
-            EOF
+            {
+              echo "## 🚀 Debug APK Build & Release Succeeded"
+              echo ""
+              echo "- **Release Tag:** \`$TAG_NAME\`"
+              echo "- **Release Title:** $RELEASE_TITLE"
+              echo "- **Download Release Asset:** [$ASSET_FILENAME]($RELEASE_URL)"
+              echo "- **Direct Release Page:** [View Release]($RELEASE_URL)"
+              echo ""
+              echo "> 📱 The APK can be downloaded directly on your phone from the release **Assets** section."
+              echo "> 📦 The standard GitHub Actions artifact (\`app-debug-apk\`) is also available as a backup."
+            } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "::warning::GitHub Release publishing was not completed or encountered an error."
             echo "The debug APK build and verification succeeded."
             echo "The GitHub Actions artifact named 'app-debug-apk' remains available for download."
 
-            cat <<EOF >> "$GITHUB_STEP_SUMMARY"
-            ## ⚠️ Debug APK Built (Release Publishing Incomplete)
-
-            - **APK Build Status:** Succeeded
-            - **Actions Artifact:** \`app-debug-apk\` is available for download in the workflow run summary.
-            - **Notice:** GitHub Release creation did not complete, but the verified debug APK was preserved as a workflow artifact.
-            EOF
+            {
+              echo "## ⚠️ Debug APK Built (Release Publishing Incomplete)"
+              echo ""
+              echo "- **APK Build Status:** Succeeded"
+              echo "- **Actions Artifact:** \`app-debug-apk\` is available for download in the workflow run summary."
+              echo "- **Notice:** GitHub Release creation did not complete, but the verified debug APK was preserved as a workflow artifact."
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
